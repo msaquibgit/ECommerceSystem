@@ -1,5 +1,6 @@
 ﻿using AutoMapper;
 using Messaging.Common.Events;
+using Messaging.Common.Models;
 using Microsoft.Extensions.Configuration;
 using OrderService.Application.DTOs.Common;
 using OrderService.Application.DTOs.Order;
@@ -25,7 +26,8 @@ namespace OrderService.Application.Services
         private readonly IMapper _mapper;
         private readonly IConfiguration _configuration;
         private readonly IMasterDataRepository _masterDataRepository;
-        private readonly IOrderEventPublisher _publisher;
+        //private readonly IOrderEventPublisher _publisher;
+        private readonly IOrderPlacedEventPublisher _publisher;
 
         public OrderService
         (
@@ -36,7 +38,8 @@ namespace OrderService.Application.Services
             INotificationServiceClient notificationServiceClient,
             IMapper mapper, IConfiguration configuration,
             IMasterDataRepository masetDataRepository,
-            IOrderEventPublisher publisher
+            //IOrderEventPublisher publisher,
+            IOrderPlacedEventPublisher publisher
         )
         {
             _orderRepository = orderRepository ?? throw new ArgumentNullException(nameof(orderRepository));
@@ -232,7 +235,7 @@ namespace OrderService.Application.Services
         // Create a new order including user validation, address handling, stock check,
         // pricing calculations, payment initiation, and transactional consistency.
 
-        public async Task<OrderResponseDTO> CreateOrderAsync(CreateOrderRequestDTO request, string accessToken)
+        public async Task<OrderResponseDTO> CreateOrderAsync2(CreateOrderRequestDTO request, string accessToken)
         {
             if (request == null)
                 throw new ArgumentNullException(nameof(request));
@@ -389,7 +392,7 @@ namespace OrderService.Application.Services
                         CustomerEmail = user.Email,
                         PhoneNumber = user.PhoneNumber,
                         TotalAmount = order.TotalAmount,
-                        Items = order.OrderItems.Select(i => new OrderItemLine
+                        Items = order.OrderItems.Select(i => new OrderLineItem
                         {
                             ProductId = i.ProductId,
                             Quantity = i.Quantity,
@@ -401,7 +404,7 @@ namespace OrderService.Application.Services
                     //    - ProductService (to decrease stock)
                     //    - NotificationService (to insert notification record).
                     // correlationId is set for traceability across logs and microservices.
-                    await _publisher.PublishOrderPlacedAsync(orderPlacedEvent, Guid.NewGuid().ToString());
+                    //await _publisher.PublishOrderPlacedAsync(orderPlacedEvent, Guid.NewGuid().ToString());
 
                     // Map and return order DTO with confirmed status and no payment URL
 
@@ -435,6 +438,214 @@ namespace OrderService.Application.Services
                 throw;
             }
         }
+
+        // Create a new order including user validation, address handling, stock check,
+        // pricing calculations, payment initiation, and transactional consistency.
+        // Modification for the Saga Pattern
+        public async Task<OrderResponseDTO> CreateOrderAsync(CreateOrderRequestDTO request, string accessToken)
+        {
+            if (request == null)
+                throw new ArgumentNullException(nameof(request));
+            if (request.Items == null || !request.Items.Any())
+                throw new ArgumentException("Order must have at least one item.");
+
+            //bool userExist = await _userServiceClient.UserExistsAsync(request.UserId, accessToken);
+            //if (!userExist) 
+            //    throw new InvalidOperationException("User does not exist");
+
+            var user = await _userServiceClient.GetUserByIdAsync(request.UserId, accessToken);
+            if (user == null)
+                throw new InvalidOperationException("User does not exist.");
+
+            //1. Resolve Shipping Address ID, either provided or created newly via User Microservice
+            Guid? shippingAddressId = null;
+            if (request.ShippingAddressId != null)
+            {
+                shippingAddressId = request.ShippingAddressId;
+            }
+            else if (request.ShippingAddress != null)
+            {
+                request.ShippingAddress.UserId = request.UserId;
+                shippingAddressId = request.ShippingAddressId;
+                shippingAddressId = await _userServiceClient.SaveOrUpdateAddressAsync(request.ShippingAddress, accessToken);
+            }
+            // 2. Resolve Billing Address ID, either provided or created newly
+            Guid? billiingAddressId = null;
+            if (request.BillingAddressId.HasValue && request.BillingAddressId != Guid.Empty)
+            {
+                billiingAddressId = request.BillingAddressId;
+            }
+            else if (request.BillingAddress != null)
+            {
+                request.BillingAddress.UserId = request.UserId;
+                billiingAddressId = await _userServiceClient.SaveOrUpdateAddressAsync(request.BillingAddress, accessToken);
+            }
+            // 3. Validate presence of both addresses
+            if (shippingAddressId == null && billiingAddressId == null)
+            {
+                throw new ArgumentException("Both ShippingAddressId and BillingAddressId must be provided or created.");
+            }
+            // 4. Validate product stock availability but do not reduce stock yet
+            var stockCheckRequest = request.Items.Select(i => new ProductStockVerificationRequestDTO
+            {
+                ProductId = i.ProductId,
+                Quantity = i.Quantity,
+
+            }).ToList();
+            var stockValidation = await _productServiceClient.CheckProductsAvailabilityAsync(stockCheckRequest, accessToken);
+            if (stockValidation == null || stockValidation.Any(x => !x.IsValidProduct || !x.IsQuantityAvailable))
+            {
+                throw new InvalidOperationException("One or more products are invalid or out of stock.");
+            }
+            // 5. Retrieve latest product info for accurate pricing and discount
+            var productIds = request.Items.Select(i => i.ProductId).ToList();
+            var products = await _productServiceClient.GetProductsByIdsAsync(productIds, accessToken);
+            if (products == null || products.Count != productIds.Count)
+            {
+                throw new InvalidOperationException("Failed to retrieve product details for all items.");
+            }
+            try
+            {
+                // Fetch policies (example placeholders, adjust with your actual logic)
+                int? cancellationPolicyId = null;
+                int? returnPolicyId = null;
+                // Example: fetch cancellation policy based on user or other criteria
+                var cancellationPolicy = await _masterDataRepository.GetActiveCancellationPolicyAsync();
+                if (cancellationPolicy != null)
+                {
+                    cancellationPolicyId = cancellationPolicy.Id;
+                }
+                var returnPolicy = await _masterDataRepository.GetActiveReturnPolicyAsync();
+                if (returnPolicy != null)
+                {
+                    returnPolicyId = returnPolicy.Id;
+                }
+                var orderId = Guid.NewGuid();
+                var orderNumber = GenerateOrderNumberFromGuid(orderId);
+                var now = DateTime.UtcNow;
+
+                var initialStatus = request.PaymentMethod == PaymentMethodEnum.COD
+                    ? OrderStatusEnum.Confirmed  // COD orders confirmed immediately
+                    : OrderStatusEnum.Pending;   // Online payment orders start as pending
+
+                // Create order entity
+                var order = new Order
+                {
+                    Id = orderId,
+                    OrderNumber = orderNumber,
+                    UserId = request.UserId,
+                    ShippingAddressId = shippingAddressId.Value,
+                    BillingAddressId = billiingAddressId.Value,
+                    PaymentMethod = request.PaymentMethod.ToString(),
+                    OrderStatusId = (int)initialStatus,
+                    CreatedAt = now,
+                    OrderDate = now,
+                    CancellationPolicyId = cancellationPolicyId,
+                    ReturnPolicyId = returnPolicyId,
+                    OrderItems = new List<OrderItem>()
+                };
+
+                // Add order items with fresh product data
+                foreach (var item in request.Items)
+                {
+                    var product = products.First(p => p.Id == item.ProductId);
+                    order.OrderItems.Add(new OrderItem
+                    {
+                        Id = Guid.NewGuid(),
+                        OrderId = order.Id,
+                        ProductId = product.Id,
+                        ProductName = product.Name,
+                        PriceAtPurchase = product.Price,
+                        DiscountedPrice = product.DiscountedPrice,
+                        Quantity = item.Quantity,
+                        ItemStatusId = (int)initialStatus
+                    });
+                }
+                // Calculate order totals: subtotal, discount, tax, shipping, and final amount
+                order.SubTotalAmount = Math.Round(order.OrderItems.Sum(i => i.PriceAtPurchase * i.Quantity), 2, MidpointRounding.AwayFromZero);
+                order.DiscountAmount = Math.Round(await CalculateDiscountAmountAsync(order.OrderItems), 2, MidpointRounding.AwayFromZero);
+                order.TaxAmount = Math.Round(await CalculateTaxAmountAsync(order.SubTotalAmount - order.DiscountAmount), 2, MidpointRounding.AwayFromZero);
+                order.ShippingCharges = Math.Round(CalculateShippingCharges(order.SubTotalAmount - order.ShippingCharges), 2, MidpointRounding.AwayFromZero);
+                order.TotalAmount = Math.Round(order.SubTotalAmount - order.DiscountAmount + order.TaxAmount + order.ShippingCharges, 2, MidpointRounding.AwayFromZero);
+
+                // Save order to repository
+                var addedOrder = await _orderRepository.AddAsync(order);
+                if (addedOrder == null) throw new InvalidOperationException("Failed to create order.");
+
+                // Initiate payment via Payment Service
+                var paymentRequest = new CreatePaymentRequestDTO
+                {
+                    OrderId = order.Id,
+                    UserId = order.UserId,
+                    Amount = order.TotalAmount,
+                    PaymentMethod = request.PaymentMethod
+
+                };
+
+                //var paymentResponse = await _paymentServiceClient.InitiatePaymentAsync(paymentRequest, accessToken);
+                // (paymentResponse == null) throw new InvalidOperationException("Payment initiation failed
+                // 
+                //  COD, immediately reserve stock and send notification
+                if (request.PaymentMethod == PaymentMethodEnum.COD)
+                {
+                    #region Event pusblishing to RabbitMQ
+                    // Construct the integration event (OrderPlacedEvent)
+                    var orderPlacedEvent = new OrderPlacedEvent
+                    {
+                        OrderId = order.Id,
+                        OrderNumber = order.OrderNumber,
+                        UserId = order.UserId,
+                        CustomerName = user.FullName,
+                        CustomerEmail = user.Email,
+                        PhoneNumber = user.PhoneNumber,
+                        TotalAmount = order.TotalAmount,
+                        Items = order.OrderItems.Select(i => new OrderLineItem
+                        {
+                            ProductId = i.ProductId,
+                            Quantity = i.Quantity,
+                            UnitPrice = i.PriceAtPurchase
+                        }).ToList()
+                    };
+                    // Publish the event to RabbitMQ using the shared publisher.
+                    // This message will be routed to:
+                    //    - ProductService (to decrease stock)
+                    //    - NotificationService (to insert notification record).
+                    // correlationId is set for traceability across logs and microservices.
+                    //await _publisher.PublishOrderPlacedAsync(orderPlacedEvent, Guid.NewGuid().ToString());
+
+                    // Map and return order DTO with confirmed status and no payment URL
+
+
+
+                    #endregion
+
+                    // Map and return order DTO with confirmed status and no payment URL
+                    var orderDto = _mapper.Map<OrderResponseDTO>(order);
+                    orderDto.OrderStatus = OrderStatusEnum.Confirmed;
+                    orderDto.PaymentMethod = PaymentMethodEnum.COD;
+                    orderDto.PaymentUrl = null;
+                    return orderDto;
+
+                }
+                else
+                {
+                    // Map and return order DTO with pending status and payment URL
+                    var orderDto = _mapper.Map<OrderResponseDTO>(order);
+                    orderDto.OrderStatus = OrderStatusEnum.Pending;
+                    orderDto.PaymentMethod = request.PaymentMethod;
+                    // orderDto.PaymentUrl = paymentResponse.PaymentUrl;
+                    return orderDto;
+
+                }
+            }
+            catch (Exception ex)
+            {
+                //Log the Exception
+                Console.WriteLine(ex.Message);
+                throw;
+            }
+        }
+
 
 
         #endregion
@@ -481,7 +692,7 @@ namespace OrderService.Application.Services
             }
         }
 
-        public async Task<bool> ConfirmOrderAsync(Guid orderId, string accessToken)
+        public async Task<bool> ConfirmOrderAsync2(Guid orderId, string accessToken)
         {
             // Retrieve order
             var order = await _orderRepository.GetByIdAsync(orderId);
@@ -521,7 +732,7 @@ namespace OrderService.Application.Services
                     CustomerEmail = user.Email,
                     PhoneNumber = user.PhoneNumber,
                     TotalAmount = order.TotalAmount,
-                    Items = order.OrderItems.Select(i => new OrderItemLine
+                    Items = order.OrderItems.Select(i => new OrderLineItem
                     {
                         ProductId = i.ProductId,
                         Quantity = i.Quantity,
@@ -536,7 +747,7 @@ namespace OrderService.Application.Services
                 // - ProductService will consume this event to reduce stock
                 // - NotificationService will consume this event to insert a notification
                 // - correlationId (Guid.NewGuid().ToString()) helps trace this message across logs and services
-                await _publisher.PublishOrderPlacedAsync(orderPlacedEvent, Guid.NewGuid().ToString());
+               // await _publisher.PublishOrderPlacedAsync(orderPlacedEvent, Guid.NewGuid().ToString());
 
                 return true;
 
@@ -549,6 +760,77 @@ namespace OrderService.Application.Services
 
             }
         }
+        // Modification for Saga Patern
+        public async Task<bool> ConfirmOrderAsync(Guid orderId, string accessToken)
+        {
+            // Retrieve order
+            var order = await _orderRepository.GetByIdAsync(orderId);
+            if (order == null)
+                throw new KeyNotFoundException("Order not found.");
+
+            // Only allow confirmation if order is pending
+            if (order.OrderStatusId != (int)OrderStatusEnum.Pending)
+                throw new InvalidOperationException("Order is not in a pending state.");
+
+            // Retrieve payment info from Payment Service
+            var paymentInfo = await _paymentServiceClient.GetPaymentInfoAsync(new PaymentInfoRequestDTO { OrderId = orderId }, accessToken);
+            if (paymentInfo == null)
+                throw new InvalidOperationException("Payment information not found for this order");
+
+            if (paymentInfo.PaymentStatus != PaymentStatusEnum.Completed)
+                throw new InvalidOperationException("Payment is not successful.");
+
+            var user = await _userServiceClient.GetUserByIdAsync(order.UserId, accessToken);
+            if (user == null)
+                throw new InvalidOperationException("User does not exist.");
+
+            try
+            {
+                // Change order status to Confirmed
+                bool statusChange = await _orderRepository.ChangeOrderStatusAsync(orderId, OrderStatusEnum.Confirmed, "Saquib", "Payment successful, order confirmed.");
+                if (!statusChange)
+                    throw new InvalidOperationException("Failed to update order status.");
+
+                // Now that the order is confirmed, publish an integration event
+                // Create the event payload that downstream services need
+                var orderPlacedEvent = new OrderPlacedEvent
+                {
+                    OrderId = order.Id,
+                    UserId = order.UserId,
+                    CustomerName = user.FullName,
+                    CustomerEmail = user.Email,
+                    PhoneNumber = user.PhoneNumber,
+                    TotalAmount = order.TotalAmount,
+                    Items = order.OrderItems.Select(i => new OrderLineItem
+                    {
+                        ProductId = i.ProductId,
+                        Quantity = i.Quantity,
+                        UnitPrice = i.PriceAtPurchase
+                    }).ToList()
+                };
+
+
+                // Publish the event to RabbitMQ
+                // - _publisher abstracts RabbitMQ communication
+                // - The message is sent to exchange "ecommerce.topic" with routing key "order.placed"
+                // - ProductService will consume this event to reduce stock
+                // - NotificationService will consume this event to insert a notification
+                // - correlationId (Guid.NewGuid().ToString()) helps trace this message across logs and services
+                 await _publisher.PublishOrderPlacedAsync(orderPlacedEvent);
+
+                return true;
+
+            }
+            catch (Exception ex)
+            {
+                //Log the Exception
+                Console.WriteLine(ex.Message);
+                throw;
+
+            }
+        }
+
+
 
         // Change order status with full validation, transaction support, and history tracking.
         // Returns detailed response DTO with success or error info.

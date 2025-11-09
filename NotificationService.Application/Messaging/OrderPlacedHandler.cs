@@ -1,4 +1,5 @@
 ﻿using Messaging.Common.Events;
+using Messaging.Common.Models;
 using NotificationService.Application.DTOs;
 using NotificationService.Application.Interfaces;
 using NotificationService.Contract.Messaging;

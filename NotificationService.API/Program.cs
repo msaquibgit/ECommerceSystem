@@ -1,6 +1,8 @@
 using Messaging.Common.Extension;
 using Messaging.Common.Options;
+using Messaging.Common.Topology;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using NotificationService.Application.Handlers;
 using NotificationService.Application.Interfaces;
 using NotificationService.Application.Messaging;
@@ -11,8 +13,10 @@ using NotificationService.Contract.Messaging;
 using NotificationService.Domain.Repositories;
 using NotificationService.Infrastructure.BackgroundJobs;
 using NotificationService.Infrastructure.Messaging;
+using NotificationService.Infrastructure.Messaging.Extensions;
 using NotificationService.Infrastructure.Persistence;
 using NotificationService.Infrastructure.Repositories;
+using RabbitMQ.Client;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -56,29 +60,73 @@ builder.Services.AddScoped<INotificationTemplateRepository, NotificationTemplate
 builder.Services.AddScoped<IUserPreferenceRepository, UserPreferenceRepository>();
 
 
-// Bind RabbitMQ config
+// 1? Load RabbitMQ configuration from appsettings.json into strongly-typed RabbitMqOptions.
+//    This includes settings like host, username, exchange, and queue names.
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
+
+// 2? Retrieve the configuration immediately for topology setup (exchange/queue declarations).
 var mq = builder.Configuration.GetSection("RabbitMq").Get<RabbitMqOptions>()!;
 
-// Register RabbitMQ channel (you likely already have AddRabbitMq in Messaging.Common)
-builder.Services.AddRabitMQ(mq.HostName, mq.UserName, mq.Password, mq.VirtualHost);
+// 3? Register RabbitMQ Connection + Channel into the DI container.
+//    This uses a shared extension from Messaging.Common.
+//    - Creates a long-lived connection to RabbitMQ (ConnectionManager)
+//    - Opens a channel (IModel) for publishing and consuming
+//    - Registers both as singletons, reused throughout the service lifetime
+builder.Services.AddRabbitMq(mq.HostName, mq.UserName, mq.Password, mq.VirtualHost);
+
+// 4? Register the application-level message handler.
+//    This class (NotificationServiceHandler) receives events from consumers
+//    and handles the business logic for creating and sending notifications.
+builder.Services.AddScoped<INotificationServiceHandler, NotificationServiceHandler>();
+
+// 5? Register the RabbitMQ consumers for Saga events.
+//    - OrderConfirmedConsumer ? listens to "order.confirmed" messages.
+//    - OrderCancelledConsumer ? listens to "order.cancelled" messages.
+//    Each consumer runs as a hosted background service that reacts
+//    automatically to messages published by the OrchestratorService.
+builder.Services.AddNotificationConsumers();
+
+
+
+//// Bind RabbitMQ config
+//builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection("RabbitMq"));
+//var mq = builder.Configuration.GetSection("RabbitMq").Get<RabbitMqOptions>()!;
+
+//// Register RabbitMQ channel (you likely already have AddRabbitMq in Messaging.Common)
+//builder.Services.AddRabitMQ(mq.HostName, mq.UserName, mq.Password, mq.VirtualHost);
 
 // Register handler
-builder.Services.AddScoped<IOrderPlacedHandler, OrderPlacedHandler>();
+//builder.Services.AddScoped<IOrderPlacedHandler, OrderPlacedHandler>();
 
 // Register consumer
-builder.Services.AddHostedService<OrderPlacedConsumer>();
+//builder.Services.AddHostedService<OrderPlacedConsumer>();
 
-builder.Services.AddScoped<INotificationProcessor, NotificationService.Application.Services.NotificationService>();
+//builder.Services.AddScoped<INotificationProcessor, NotificationService.Application.Services.NotificationService>();
 
 // Register Background Worker
-builder.Services.AddHostedService<NotificationWorker>();
+//builder.Services.AddHostedService<NotificationWorker>();
 
 
 
 
 var app = builder.Build();
 
+// ============================================================
+// ENSURE RABBITMQ TOPOLOGY (EXCHANGES, QUEUES, BINDINGS)
+// ============================================================
+// On application startup, ensure that the RabbitMQ topology exists.
+// This step:
+//    - Declares the main topic exchange (ecommerce.topic)
+//    - Declares the dead-letter exchange (DLX)
+//    - Creates queues for all consumers (order.confirmed, order.cancelled)
+//    - Binds them to their corresponding routing keys.
+// This is idempotent ? safe to call multiple times without duplicating resources.
+using (var scope = app.Services.CreateScope())
+{
+    var ch = scope.ServiceProvider.GetRequiredService<IModel>();
+    var opt = scope.ServiceProvider.GetRequiredService<IOptions<RabbitMqOptions>>().Value;
+    RabbitTopology.EnsureAll(ch, opt);
+}
 
 
 // Configure the HTTP request pipeline.

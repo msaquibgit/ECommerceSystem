@@ -1,4 +1,4 @@
-﻿using Messaging.Common.Events;
+﻿using Messaging.Common.Models;
 
 namespace OrderService.Contract.Messaging
 {
