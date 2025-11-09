@@ -9,6 +9,7 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
+using Messaging.Common.Models;
 
 namespace NotificationService.Infrastructure.Messaging
 {
@@ -88,7 +89,7 @@ namespace NotificationService.Infrastructure.Messaging
             };
             // Start consuming messages from the Notification queue.
             // autoAck = false → we manually Ack/Nack messages after processing.
-            _channel.BasicConsume(queue: _options.NotificationOrderPlacedQueue, autoAck: false, consumer: consumer);
+           // _channel.BasicConsume(queue: _options.NotificationOrderPlacedQueue, autoAck: false, consumer: consumer);
             // Return completed task → consumer runs in background indefinitely.
             return Task.CompletedTask;
         }

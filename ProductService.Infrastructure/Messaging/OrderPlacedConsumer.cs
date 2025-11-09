@@ -1,4 +1,5 @@
 ﻿using Messaging.Common.Events;
+using Messaging.Common.Models;
 using Messaging.Common.Options;
 using Messaging.Common.Topology;
 using Microsoft.Extensions.DependencyInjection;
@@ -99,11 +100,11 @@ namespace ProductService.Infrastructure.Messaging
             // This is why you need BasicAck above.
             // If processing fails, you can send a Nack instead, and RabbitMQ can retry or send to DLQ.
 
-            _channel.BasicConsume(
-                                queue: _opt.ProductOrderPlacedQueue,
-                autoAck: false,
-                consumer: consumer
-            );
+            //_channel.BasicConsume(
+            //    queue: _opt.ProductOrderPlacedQueue,
+            //    autoAck: false,
+            //    consumer: consumer
+            //);
 
             // Return completed task since this runs in the background forever.
             return Task.CompletedTask;

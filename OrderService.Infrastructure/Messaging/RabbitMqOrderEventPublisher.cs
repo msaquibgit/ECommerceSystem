@@ -1,4 +1,5 @@
 ﻿using Messaging.Common.Events;
+using Messaging.Common.Models;
 using Messaging.Common.Options;
 using Messaging.Common.Topology;
 using Microsoft.Extensions.Options;
@@ -6,9 +7,10 @@ using OrderService.Contract.Messaging;
 using RabbitMQ.Client;
 using System.Text.Json;
 
+
 namespace OrderService.Infrastructure.Messaging
 {
-    public class RabbitMqOrderEventPublisher:IOrderEventPublisher
+    public sealed class  RabbitMqOrderEventPublisher: IOrderEventPublisher
     {
         private readonly IModel _channel; // RabbitMQ channel object, used to publish messages.
         private readonly RabbitMqOptions _opt; // Holds RabbitMQ configuration settings.

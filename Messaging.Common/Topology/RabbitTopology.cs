@@ -3,98 +3,110 @@ using RabbitMQ.Client;
 
 namespace Messaging.Common.Topology
 {
+    // The RabbitTopology class ensures that all required exchanges, queues, 
+    // and bindings exist before any microservice starts publishing or consuming messages.
+    // It is idempotent — meaning if the objects already exist, it won’t recreate them.
+
     public static class RabbitTopology
     {
-        public static void EnsureAll(IModel channel, RabbitMqOptions rabbitMqOptions)
+        // Declares and binds all exchanges and queues required across microservices.
+        // This method is typically called once during service startup.
+
+        // Parameters:
+        //    ch: An active RabbitMQ channel (IModel) used to declare exchanges and queues.
+        //    opt: Configuration options containing exchange, queue, and routing key names
+
+        public static void EnsureAll(IModel ch, RabbitMqOptions opt)
         {
-            // Declare the main exchange (topic-based)
-            //    - Durable: survives broker restarts
-            //    - AutoDelete: false means it won't disappear when unused
-            //    - Type: Topic exchange routes messages based on pattern matching
+            // -------------------------------------------------------------
+            // 1. Declare Main Business Exchange
+            // --------------------------------------------------------------------
+            // This is the central topic exchange where all domain events are published.
+            // Services will publish or subscribe to routing keys on this exchange.
+            // Using 'durable: true' ensures that the exchange survives RabbitMQ restarts.
+            ch.ExchangeDeclare(exchange: opt.ExchangeName, type: ExchangeType.Topic, durable: true, autoDelete: false);
 
-            channel.ExchangeDeclare
-                (
-                    exchange: rabbitMqOptions.ExchangeName,
-                    type: ExchangeType.Topic,
-                    durable: true,
-                    autoDelete: false
-                );
-            // Declare the Dead Letter Exchange (DLX) if configured
-            //    - Used for failed/rejected messages (safety net)
 
-            if (!string.IsNullOrEmpty(rabbitMqOptions.ExchangeName))
+            // -------------------------------------------------------------
+            // 2. Declare Dead Letter Exchange (DLX) and Queue
+            // --------------------------------------------------------------------
+            // The DLX handles messages that are rejected, expired, or failed to be processed.
+            // A fanout exchange broadcasts all dead messages to the DLQ (Dead Letter Queue).
+            ch.ExchangeDeclare(exchange: opt.DlxExchangeName, type: ExchangeType.Fanout, durable: true, autoDelete: false);
+
+            // Create the DLQ (Dead Letter Queue) to store failed messages for later inspection.
+            ch.QueueDeclare(queue: opt.DlxQueueName, durable: true, exclusive: false, autoDelete: false);
+
+            // Bind DLQ to DLX (so that dead messages are redirected here).
+            ch.QueueBind(queue: opt.DlxQueueName, exchange: opt.DlxExchangeName, routingKey: "");
+
+            // -------------------------------------------------------------
+            // 3. Attach DLX Settings to Business Queues
+            // -------------------------------------------------------------
+            // These arguments attach the DLX to all main business queues.
+            // It ensures that if a consumer rejects a message, RabbitMQ automatically
+            // sends it to the Dead Letter Exchange (DLX) for safe storage and inspection.
+            var qargs = new Dictionary<string, object>
             {
-                channel.ExchangeDeclare
-                    (
-                        exchange: rabbitMqOptions.DlxExchangeName,
-                        type: ExchangeType.Fanout, //Fanout: send dead letters to all bound queues
-                        durable: true,
-                        autoDelete: false
+                ["x-dead-letter-exchange"] = opt.DlxExchangeName!, // Where to send after failure
+                ["x-max-length"] = 1000,                           // Max messages
+                ["x-message-ttl"] = 300000,                        // 5-minute lifespan
+                //RabbitMQ does not support maximum number of retries
+            };
+            // -------------------------------------------------------------
+            // 4️. Declare & Bind Queues for Each Microservice
+            // -------------------------------------------------------------
+            // ORCHESTRATOR → Listens for "order.placed" events published by OrderService.
+            // This is where the Saga begins. Once an order is placed, the orchestrator takes over.
+            ch.QueueDeclare(queue: opt.QOrchestratorOrderPlaced, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            // This means:
+            //      Durable → queue survives broker restarts.
+            //      Exclusive = false → multiple microservices or consumers can listen to the same queue.
+            //      AutoDelete = false → queue stays alive until manually deleted or the broker is reset.
 
-                    );
-            }
+            ch.QueueBind(queue: opt.QOrchestratorOrderPlaced, exchange: opt.ExchangeName, routingKey: opt.RkOrderPlaced);
 
-            // Declare Dead Letter Queue if provided
-            if (!string.IsNullOrWhiteSpace(rabbitMqOptions.DlxQueueName))
-            {
-                channel.QueueDeclare
-                    (
-                        queue: rabbitMqOptions.DlxQueueName!,
-                        durable: true,      // survive broker restarts
-                        exclusive: false,   // can be consumed by multiple consumers
-                        autoDelete: false,  // not auto-deleted when last consumer disconnects
-                        arguments: null
-                    );
+            // PRODUCT SERVICE → Listens for "stock.reservation.requested" events.
+            // The orchestrator requests the ProductService to reserve stock for an order.
+            ch.QueueDeclare(queue: opt.QProductStockReservationRequested, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QProductStockReservationRequested, exchange: opt.ExchangeName, routingKey: opt.RkStockReservationRequested);
 
-            }
+            // ORCHESTRATOR listens to "stock.reserved" events (from ProductService)
+            //    On success, Orchestrator will confirm the order.
+            ch.QueueDeclare(queue: opt.QOrchestratorStockReserved, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QOrchestratorStockReserved, exchange: opt.ExchangeName, routingKey: opt.RkStockReserved);
 
-            // Bind DLQ to DLX (routingKey irrelevant for fanout exchange)
-            channel.QueueBind(rabbitMqOptions.DlxQueueName, rabbitMqOptions.DlxExchangeName!, routingKey: "");
+            // ORCHESTRATOR also listens to "stock.failed" events (from ProductService)
+            //    On failure, Orchestrator will cancel the order and trigger compensation.
+            ch.QueueDeclare(queue: opt.QOrchestratorStockFailed, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QOrchestratorStockFailed, exchange: opt.ExchangeName, routingKey: opt.RkStockFailed);
 
+            // -------------------------------------------------------------
+            // 5️. Declare Notification Service Queues
+            // -------------------------------------------------------------
+            // NotificationService listens to "order.confirmed" events
+            //    Used to send confirmation emails or SMS notifications to customers.
+            ch.QueueDeclare(queue: opt.QNotificationOrderConfirmed, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QNotificationOrderConfirmed, exchange: opt.ExchangeName, routingKey: opt.RkOrderConfirmed);
 
-            // Common queue arguments (applied to business queues)
-            //    - Add DLX binding if one exists, so rejected messages are routed safely
-            var args = new Dictionary<string, object>();
-            if (!string.IsNullOrEmpty(rabbitMqOptions.DlxExchangeName))
-            {
-                args["x-dead-letter-exchange"] = rabbitMqOptions.DlxExchangeName;
-                args["x-message-ttl"] = 10000;
-                args["x-max-length"] = 100;
+            // NotificationService also listens to "order.cancelled" events
+            //    Used to send cancellation alerts to customers.
+            ch.QueueDeclare(queue: opt.QNotificationOrderCancelled, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QNotificationOrderCancelled, exchange: opt.ExchangeName, routingKey: opt.RkOrderCancelled);
 
-                // Declare ProductService queue (listens for order.placed events)
-                channel.QueueDeclare
-                    (
-                        queue: rabbitMqOptions.ProductOrderPlacedQueue,
-                        durable: true,
-                        exclusive: false,
-                        autoDelete: false
-                    ); // attach DLX args if available
+            // -------------------------------------------------------------
+            // 6️. Declare Compensation Queue for OrderService
+            // -------------------------------------------------------------
+            // OrderService listens to "order.cancelled" events
+            //    This ensures that failed orders are compensated in the database.
+            ch.QueueDeclare(queue: opt.QOrderCompensationCancelled, durable: true, exclusive: false, autoDelete: false, arguments: qargs);
+            ch.QueueBind(queue: opt.QOrderCompensationCancelled, exchange: opt.ExchangeName, routingKey: opt.RkOrderCancelled);
 
-                // Declare NotificationService queue (listens for order.placed events)
-                channel.QueueDeclare
-                    (
-                        queue: rabbitMqOptions.NotificationOrderPlacedQueue,
-                        durable: true,
-                        exclusive: false,
-                        autoDelete: false
-
-                    ); // attach DLX args if available
+            // All topology components (Exchanges, Queues, Bindings) are now ensured.
+            // This setup guarantees that services can publish or consume messages
+            // safely and consistently across the distributed Saga workflow.
 
 
-                // Bind queues to the main exchange with the routing key "order.placed"
-                //    - Any publisher sending to exchange "ecommerce.topic" with routingKey "order.placed"
-                //      will be delivered to both queues (Product & Notification)
-                channel.QueueBind(
-                     queue: rabbitMqOptions.ProductOrderPlacedQueue,
-                     exchange: rabbitMqOptions.ExchangeName,
-                     routingKey: "order.placed");
-
-                channel.QueueBind(
-                    queue: rabbitMqOptions.NotificationOrderPlacedQueue,
-                    exchange: rabbitMqOptions.ExchangeName,
-                    routingKey: "order.placed");
-
-            }
         }
     }
 }

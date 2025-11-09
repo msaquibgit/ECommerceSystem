@@ -1,8 +1,8 @@
-﻿using Messaging.Common.Events;
+﻿using Messaging.Common.Models;
 
 namespace NotificationService.Contract.Messaging
 {
-    public interface IOrderPlacedHandler 
+    public interface IOrderPlacedHandler
     {
         Task HandleAsync(OrderPlacedEvent evt);
     }

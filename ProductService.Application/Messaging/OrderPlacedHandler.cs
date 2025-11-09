@@ -1,4 +1,5 @@
 ﻿using Messaging.Common.Events;
+using Messaging.Common.Models;
 using ProductService.Application.DTOs;
 using ProductService.Application.Interface;
 using ProductService.Contract.Messaging;
