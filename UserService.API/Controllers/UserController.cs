@@ -15,11 +15,14 @@ namespace UserService.API.Controllers
     public class UserController : ControllerBase
     {
         private readonly IUserService _userService;
-
-        public UserController(IUserService userService)
+        private readonly ILogger<UserController> _logger;
+        public UserController(IUserService userService, ILogger<UserController> logger)
         {
             _userService = userService;
+            _logger = logger;
         }
+
+
         [HttpPost("register")]
         [ProducesResponseType(typeof(APIResponse<string>), (int)HttpStatusCode.OK)]
         [ProducesResponseType(typeof(APIResponse<string>), (int)HttpStatusCode.BadRequest)]
@@ -77,8 +80,8 @@ namespace UserService.API.Controllers
             }
         }
 
-        [HttpPost("login")]
-        public async Task<IActionResult> Login([FromBody] LoginDTO dto)
+        [HttpPost("login1")]
+        public async Task<IActionResult> Login1([FromBody] LoginDTO dto)
         {
             var IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
             var UserAgent = GetNormalizedUserAgent();
@@ -97,6 +100,47 @@ namespace UserService.API.Controllers
             return Ok(APIResponse<LoginResponseDTO>.SuccessResponse(loginResponse,
                 loginResponse.RequiresTwoFactor ? "Two-factor authentication required." : "Login successful."));
         }
+
+        [HttpPost("login")]
+        public async Task<IActionResult> Login([FromBody] LoginDTO dto)
+        {
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+            var userAgent = GetNormalizedUserAgent();
+
+            _logger.LogInformation($"Login request received. IP={ipAddress}, EmailOrUserName={dto.EmailOrUserName}");
+
+            try
+            {
+                var loginResponse = await _userService.LoginAsync(dto, ipAddress, userAgent);
+
+                if (!string.IsNullOrEmpty(loginResponse.ErrorMessage))
+                {
+                    _logger.LogWarning($"Login failed for {dto.EmailOrUserName}. Reason: {loginResponse.ErrorMessage}");
+
+                    loginResponse.Succeeded = false;
+                    return Unauthorized(APIResponse<LoginResponseDTO>.FailResponse(
+                        loginResponse.ErrorMessage, null, loginResponse));
+                }
+
+                loginResponse.Succeeded = true;
+                _logger.LogInformation(loginResponse.RequiresTwoFactor
+                        ? $"2FA required for {dto.EmailOrUserName}"
+                        : $"User {dto.EmailOrUserName} logged in successfully.");
+
+                return Ok(APIResponse<LoginResponseDTO>.SuccessResponse(
+                    loginResponse,
+                    loginResponse.RequiresTwoFactor
+                        ? "Two-factor authentication required."
+                        : "Login successful."));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Unexpected error occurred during login for {dto.EmailOrUserName}");
+                return StatusCode(500, APIResponse<LoginResponseDTO>.FailResponse($"Unexpected error occurred during login for {dto.EmailOrUserName}", new List<string> { ex.Message }));
+            }
+        }
+
+
 
         [HttpPost("refresh-token")]
         public async Task<IActionResult> RefreshToken([FromBody] RefreshTokenRequestDTO dto)
