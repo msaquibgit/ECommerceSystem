@@ -83,6 +83,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrchestratorService.Infrast
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OrchestratorService.API", "OrchestratorService.API\OrchestratorService.API.csproj", "{1018CC2E-A34C-49E5-B289-10D5B66FE59C}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Gateway", "Gateway", "{111D167E-9ED0-4726-B81B-C2C3F7346AC6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ecommerce.APIGateway", "Ecommerce.APIGateway\Ecommerce.APIGateway.csproj", "{917B6D48-E35D-4625-8CFC-7D655009CFEA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -221,6 +225,10 @@ Global
 		{1018CC2E-A34C-49E5-B289-10D5B66FE59C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1018CC2E-A34C-49E5-B289-10D5B66FE59C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1018CC2E-A34C-49E5-B289-10D5B66FE59C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{917B6D48-E35D-4625-8CFC-7D655009CFEA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{917B6D48-E35D-4625-8CFC-7D655009CFEA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{917B6D48-E35D-4625-8CFC-7D655009CFEA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{917B6D48-E35D-4625-8CFC-7D655009CFEA}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -259,6 +267,7 @@ Global
 		{3843963B-97DE-46D7-ABC2-DC7654FDBFCD} = {4D260BD5-2B70-4379-9DF2-0E2395E694A6}
 		{8A13AE42-F95D-413B-B5E8-23BFDAB90F03} = {4D260BD5-2B70-4379-9DF2-0E2395E694A6}
 		{1018CC2E-A34C-49E5-B289-10D5B66FE59C} = {4D260BD5-2B70-4379-9DF2-0E2395E694A6}
+		{917B6D48-E35D-4625-8CFC-7D655009CFEA} = {111D167E-9ED0-4726-B81B-C2C3F7346AC6}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F8A0C304-E2EE-4A25-8704-3118BD1ECF70}
