@@ -2,8 +2,10 @@ using Messaging.Common.Extension;
 using Messaging.Common.Options;
 using Messaging.Common.Publishing;
 using Messaging.Common.Topology;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using ProductService.Application.Interface;
 using ProductService.Application.Mappings;
 using ProductService.Application.Messaging;
@@ -16,6 +18,7 @@ using ProductService.Infrastructure.Messaging.Producers;
 using ProductService.Infrastructure.Persistence;
 using ProductService.Infrastructure.Repositories;
 using RabbitMQ.Client;
+using System.Text;
 using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -113,6 +116,24 @@ builder.Services.AddStockReserveConsumer();
 //builder.Services.AddScoped<IOrderPlacedHandler, OrderPlacedHandler>();
 //builder.Services.AddHostedService<OrderPlacedConsumer>();
 
+//Adding JWT Authentication
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+}).AddJwtBearer(options => 
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience=false,
+        ValidateLifetime=true,
+        ValidateIssuerSigningKey=true,
+        ValidIssuer=builder.Configuration["JwtSettings:Issuer"],
+        IssuerSigningKey=new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:SecretKey"]!))
+    };
+
+});
 
 
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle

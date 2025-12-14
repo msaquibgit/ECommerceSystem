@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using ProductService.API.DTOs;
 using ProductService.Application.DTOs;
 using ProductService.Application.Interface;
@@ -19,6 +20,7 @@ namespace ProductService.API.Controllers
         }
 
         [HttpGet]
+        [AllowAnonymous]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> GetAll([FromQuery] int pageNumber, [FromQuery] int pageSize)
@@ -34,6 +36,8 @@ namespace ProductService.API.Controllers
                 return StatusCode(500, APIResponse<string>.FailResponse("Internal server error"));
             }
         }
+
+
         [HttpGet("{id:guid}")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -56,6 +60,7 @@ namespace ProductService.API.Controllers
             }
         }
         [HttpGet("search")]
+        [AllowAnonymous]
         public async Task<IActionResult> Search
         (
             [FromQuery] string? searchTerm, [FromQuery] Guid? categoryId,
@@ -76,6 +81,7 @@ namespace ProductService.API.Controllers
         }
 
         [HttpPost("create")]
+        [Authorize]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
@@ -96,12 +102,13 @@ namespace ProductService.API.Controllers
                 return StatusCode(500, APIResponse<string>.FailResponse("Internal server error"));
             }
         }
-        [HttpPut]
+        [HttpPut("{id:guid}")]
+        [Authorize]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public async Task<IActionResult> Update([FromBody] ProductUpdateDTO updateDTO)
+        public async Task<IActionResult> Update(Guid id,[FromBody] ProductUpdateDTO updateDTO)
         {
             try
             {
@@ -118,7 +125,9 @@ namespace ProductService.API.Controllers
                 return StatusCode(500,APIResponse<string>.FailResponse("Internal server error"));
             }
         }
+
         [HttpDelete("{id:guid}")]
+        [Authorize(Roles ="Admin")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> Delete(Guid id)
@@ -136,6 +145,7 @@ namespace ProductService.API.Controllers
         }
 
         [HttpPost("GetByIds")]
+        [Authorize]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> GetProductByIds([FromBody] List<Guid> productIds)

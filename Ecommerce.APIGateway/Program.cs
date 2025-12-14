@@ -1,7 +1,11 @@
+using APIGateway.Middlewares;
 using Ecommerce.APIGateway.Middlewares;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
 using Ocelot.DependencyInjection;
 using Ocelot.Middleware;
 using Serilog;
+using System.Text;
 
 namespace APIGateway
 {
@@ -54,6 +58,35 @@ namespace APIGateway
             // log output everywhere.
             builder.Host.UseSerilog();
 
+            // JWT Authentication (edge validation when token is present)
+            builder.Services
+                .AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                })
+                .AddJwtBearer(options =>
+                {
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuer = true,
+                        ValidIssuer = builder.Configuration["JwtSettings:Issuer"],
+                        ValidateAudience = false,
+                        ValidateLifetime = true,
+                        ValidateIssuerSigningKey = true,
+                        IssuerSigningKey = new SymmetricSecurityKey(
+                            Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:SecretKey"]!)
+                        ),
+
+                        ClockSkew = TimeSpan.Zero
+                    };
+                });
+
+            builder.Services.AddAuthorization();
+
+
+
+
             // ---------------------------------------------------------------
             // Load Ocelot Configuration
             // ---------------------------------------------------------------
@@ -94,7 +127,7 @@ namespace APIGateway
             // UseRequestResponseLogging()
             //    ? Logs the request and response bodies, masking sensitive fields
             //      (passwords, tokens, etc.), and includes timing metrics.
-
+            app.UseGatewayBearerValidation();
             app.UseCorrelationId();
             app.UseRequestResponseLogging();
 
